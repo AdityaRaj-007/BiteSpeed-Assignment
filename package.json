@@ -4,6 +4,11 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "start": "nodemon index.ts",
+    "build": "tsc",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "npx drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",
@@ -12,6 +17,7 @@
     "dotenv": "^17.2.0",
     "drizzle-orm": "^0.44.2",
     "express": "^5.1.0",
+    "nodemon": "^3.1.10",
     "pg": "^8.16.3"
   },
   "devDependencies": {
