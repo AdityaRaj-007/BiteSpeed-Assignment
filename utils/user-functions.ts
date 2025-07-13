@@ -42,7 +42,24 @@ export const formatResponse = async (
     secondaryContactsId: [],
   };
 
+  //console.log(contacts);
+
   if (contacts.length > 0) {
+    const emails = [
+      result.email,
+      ...contacts.map((c) => c.email).filter((e): e is string => e !== null),
+    ];
+    contact.emails = [...new Set(emails)];
+
+    const phoneNumbers = [
+      result.phoneNumber,
+      ...contacts
+        .map((c) => c.phoneNumber)
+        .filter((e): e is string => e !== null),
+    ];
+    contact.phoneNumbers = [...new Set(phoneNumbers)];
+
+    contact.secondaryContactsId = contacts.map((c) => c.id);
   }
 
   return contact;

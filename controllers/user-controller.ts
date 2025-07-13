@@ -35,6 +35,9 @@ export const placeOrder = async (req: Request, res: Response) => {
       eq(usersTable.phoneNumber, phoneNumber)
     );
 
+    console.log(findUserByEmail);
+    console.log(findUserByPhoneNumber);
+
     if (!findUserByEmail && !findUserByPhoneNumber) {
       console.log("No user found creating the contact info");
       const newUser = {
@@ -51,7 +54,41 @@ export const placeOrder = async (req: Request, res: Response) => {
       return res.status(200).json({
         contact,
       });
+    } else if (findUserByEmail && findUserByPhoneNumber) {
+      const primaryUser = findUserByEmail || findUserByPhoneNumber;
+
+      console.log(primaryUser);
+      if (findUserByEmail === findUserByPhoneNumber) {
+        console.log("Email and phoneNumber already exists!!");
+        const contact = await formatResponse(primaryUser!);
+
+        return res.status(200).json({
+          contact,
+        });
+      }
     } else {
+      const primaryUser = findUserByEmail || findUserByPhoneNumber;
+
+      console.log(primaryUser);
+
+      const newUser = {
+        email: email,
+        phoneNumber: phoneNumber,
+        linkedId: primaryUser?.id,
+        linkPrecedence: "Secondary" as "Secondary",
+      };
+
+      console.log("New contact found, adding it as secondary contact!!");
+
+      const result = await db.insert(usersTable).values(newUser).returning();
+      console.log(result);
+      const contact = await formatResponse(primaryUser!);
+
+      return res.status(200).json({
+        contact,
+      });
     }
-  } catch (error) {}
+  } catch (error) {
+    console.log("Error encountered!!");
+  }
 };
