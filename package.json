@@ -2,9 +2,10 @@
   "name": "bytespeed_assignment",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist/index.js",
   "scripts": {
-    "start": "nodemon index.ts",
+    "start": "node dist/index.ts",
+    "dev": "nodemon index.ts",
     "build": "tsc -b",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "npx drizzle-kit migrate",
