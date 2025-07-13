@@ -1,6 +1,6 @@
 import express from "express";
 import dotenv from "dotenv";
-import userRoute from "./routes/user-routes";
+import userRoute from "./src/routes/user-routes";
 
 dotenv.config({});
 

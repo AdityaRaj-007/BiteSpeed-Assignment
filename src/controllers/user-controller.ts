@@ -8,8 +8,6 @@ import {
 } from "../utils/user-functions";
 import { db } from "../db/setup";
 
-type User = InferSelectModel<typeof usersTable>;
-
 export const placeOrder = async (req: Request, res: Response) => {
   try {
     const { email, phoneNumber } = req.body;
