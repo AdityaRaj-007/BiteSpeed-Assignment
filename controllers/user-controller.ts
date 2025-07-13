@@ -1,45 +1,34 @@
 import { Request, Response } from "express";
 import { usersTable } from "../db/schema";
-import { and, eq, sql } from "drizzle-orm";
-import { findOneBy, formatResponse } from "../utils/user-functions";
+import { and, eq, InferSelectModel, sql } from "drizzle-orm";
+import {
+  findOneBy,
+  formatResponse,
+  migratePrimaryToSecondary,
+} from "../utils/user-functions";
 import { db } from "../db/setup";
 
-//const db = drizzle({ usersTable });
+type User = InferSelectModel<typeof usersTable>;
 
 export const placeOrder = async (req: Request, res: Response) => {
   try {
     const { email, phoneNumber } = req.body;
 
-    if (!email) {
+    if (!email && !phoneNumber) {
       return res.status(400).json({
-        message: "Please provide an email!",
-        success: false,
-      });
-    }
-
-    if (!phoneNumber) {
-      return res.status(400).json({
-        message: "Please provide a phone number!",
+        message: "Please provide at least an email or phone number!",
         success: false,
       });
     }
 
     console.log("Finding user either by email or phone number");
 
-    const findUserByEmail = await findOneBy(
-      usersTable,
-      and(
-        eq(usersTable.email, email),
-        eq(usersTable.linkPrecedence, "Primary" as const)
-      )
-    );
-    const findUserByPhoneNumber = await findOneBy(
-      usersTable,
-      and(
-        eq(usersTable.phoneNumber, phoneNumber),
-        eq(usersTable.linkPrecedence, "Primary" as const)
-      )
-    );
+    const findUserByEmail = email
+      ? await findOneBy(usersTable, eq(usersTable.email, email))
+      : null;
+    const findUserByPhoneNumber = phoneNumber
+      ? await findOneBy(usersTable, eq(usersTable.phoneNumber, phoneNumber))
+      : null;
 
     console.log(findUserByEmail);
     console.log(findUserByPhoneNumber);
@@ -47,10 +36,12 @@ export const placeOrder = async (req: Request, res: Response) => {
     if (!findUserByEmail && !findUserByPhoneNumber) {
       console.log("No user found creating the contact info");
       const newUser = {
-        phoneNumber: phoneNumber,
-        email: email,
+        phoneNumber: phoneNumber || null,
+        email: email || null,
         linkedId: null,
         linkPrecedence: "Primary" as "Primary",
+        createdAt: sql`NOW()`,
+        updatedAt: sql`NOW()`,
       };
 
       const result = await db.insert(usersTable).values(newUser).returning();
@@ -60,111 +51,85 @@ export const placeOrder = async (req: Request, res: Response) => {
       return res.status(200).json({
         contact,
       });
-    } else if (findUserByEmail && findUserByPhoneNumber) {
-      if (
-        findUserByEmail.email === findUserByPhoneNumber.email &&
-        findUserByEmail.phoneNumber === findUserByPhoneNumber.phoneNumber
-      ) {
-        const primaryUser = findUserByEmail;
-        console.log("Email and phoneNumber already exists!!");
-        const contact = await formatResponse(primaryUser!);
+    }
 
-        return res.status(200).json({
-          contact,
-        });
-      } else {
-        const firstUser = findUserByEmail,
-          secondUser = findUserByPhoneNumber;
+    const primaryUserByEmail = findUserByEmail
+      ? findUserByEmail.linkPrecedence === "Primary"
+        ? findUserByEmail
+        : await db.query.usersTable.findFirst({
+            where: eq(usersTable.id, findUserByEmail.linkedId!),
+          })
+      : null;
+    const primaryUserByPhone = findUserByPhoneNumber
+      ? findUserByPhoneNumber.linkPrecedence === "Primary"
+        ? findUserByPhoneNumber
+        : await db.query.usersTable.findFirst({
+            where: eq(usersTable.id, findUserByPhoneNumber.linkedId!),
+          })
+      : null;
 
-        if (firstUser?.createdAt <= secondUser?.createdAt) {
-          console.log("First user is primary!");
-          console.log("Updating second contact");
-          const result = await db
-            .update(usersTable)
-            .set({
-              linkedId: firstUser.id,
-              linkPrecedence: "Secondary",
-              updatedAt: sql`NOW()`,
-            })
-            .where(eq(usersTable.id, secondUser.id))
-            .returning();
+    if (
+      primaryUserByEmail &&
+      primaryUserByPhone &&
+      primaryUserByEmail.id !== primaryUserByPhone.id
+    ) {
+      const olderPrimary =
+        primaryUserByEmail.createdAt <= primaryUserByPhone.createdAt
+          ? primaryUserByEmail
+          : primaryUserByPhone;
+      const newerPrimary =
+        primaryUserByEmail.createdAt <= primaryUserByPhone.createdAt
+          ? primaryUserByPhone
+          : primaryUserByEmail;
 
-          console.log("Second contact updated", result);
+      await migratePrimaryToSecondary(newerPrimary, olderPrimary);
 
-          const contact = await formatResponse(firstUser);
+      const contact = await formatResponse(olderPrimary);
 
-          return res.status(200).json({
-            contact,
-          });
-        } else {
-          console.log("Second user is primary!");
-          const result = await db
-            .update(usersTable)
-            .set({
-              linkedId: secondUser.id,
-              linkPrecedence: "Secondary",
-              updatedAt: sql`NOW()`,
-            })
-            .where(eq(usersTable.id, firstUser.id))
-            .returning();
+      return res.status(200).json({ contact });
+    }
 
-          console.log(result);
+    const primaryUser = primaryUserByEmail || primaryUserByPhone;
 
-          const contact = await formatResponse(secondUser);
-
-          return res.status(200).json({
-            contact,
-          });
-        }
-      }
-    } else {
-      const primaryUser = findUserByEmail || findUserByPhoneNumber;
-
-      console.log(primaryUser);
-
-      if (!primaryUser?.email || !primaryUser?.phoneNumber) {
-        console.log(
-          "Primary user email or phone number is missing — skipping query."
-        );
-        return;
-      }
-
+    if (primaryUser) {
       const contactExists = await db
         .select()
         .from(usersTable)
         .where(
           and(
-            eq(usersTable.email, email),
-            eq(usersTable.phoneNumber, phoneNumber)
+            email ? eq(usersTable.email, email) : sql`TRUE`,
+            phoneNumber ? eq(usersTable.phoneNumber, phoneNumber) : sql`TRUE`,
+            sql`deleted_at IS NULL`
           )
         );
-
-      console.log(contactExists);
 
       if (contactExists.length === 0) {
         const newUser = {
           email: email,
           phoneNumber: phoneNumber,
-          linkedId: primaryUser?.id,
+          linkedId: primaryUser.id,
           linkPrecedence: "Secondary" as "Secondary",
+          createdAt: sql`NOW()`,
+          updatedAt: sql`NOW()`,
         };
 
-        console.log("New contact found, adding it as secondary contact!!");
-
-        const result = await db.insert(usersTable).values(newUser).returning();
-        console.log(result);
-        const contact = await formatResponse(primaryUser!);
-
-        return res.status(200).json({
-          contact,
-        });
-      } else {
-        return res.status(200).json({
-          message: "Contact exits",
-        });
+        await db.insert(usersTable).values(newUser).returning();
       }
+      const contact = await formatResponse(primaryUser);
+
+      return res.status(200).json({
+        contact,
+      });
     }
+
+    return res.status(400).json({
+      message: "Invalid request",
+    });
   } catch (error) {
-    console.log("Error encountered!!");
+    console.log("Error encountered!!", error);
+
+    return res.status(500).json({
+      message: "Internal server error",
+    });
   }
 };

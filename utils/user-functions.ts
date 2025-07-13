@@ -1,64 +1,119 @@
 import { db } from "../db/setup";
-import { asc, eq, SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, SQL, sql } from "drizzle-orm";
 import { InferSelectModel } from "drizzle-orm";
-import { usersTable, linkEnum } from "../db/schema";
+import { usersTable } from "../db/schema";
 
 type User = InferSelectModel<typeof usersTable>;
 
 interface ContactResponse {
   primaryContactId: number;
-  emails: (string | null)[];
-  phoneNumbers: (string | null)[];
+  emails: string[];
+  phoneNumbers: string[];
   secondaryContactsId: number[];
 }
 
-export const findOneBy = async <T extends User>(
+export const findOneBy = async (
   table: typeof usersTable,
-  condition: SQL<unknown> | undefined
-): Promise<T | undefined> => {
+  condition?: SQL<unknown>
+): Promise<User | undefined> => {
   if (!condition) return undefined;
-  const rows = (await db.select().from(table).where(condition)) as User[];
 
-  return rows[0] as T | undefined;
+  return await db.query.usersTable.findFirst({
+    where: (fields, { and, isNull }) =>
+      and(condition, isNull(fields.deletedAt)),
+  });
 };
 
 export const formatResponse = async (
-  result: User
+  primaryUser: User
 ): Promise<ContactResponse> => {
-  const id = result.id;
-
-  const contacts = await db.query.usersTable.findMany({
-    where: (fields, { eq }) => eq(fields.linkedId, id),
+  const secondaryContacts = await db.query.usersTable.findMany({
+    where: (fields, { eq, or, isNull, and }) =>
+      and(
+        or(
+          eq(fields.linkedId, primaryUser.id),
+          eq(fields.email, primaryUser.email!),
+          eq(fields.phoneNumber, primaryUser.phoneNumber!)
+        ),
+        isNull(fields.deletedAt),
+        eq(fields.linkPrecedence, "Secondary")
+      ),
+    orderBy: (fields, { asc }) => asc(fields.createdAt),
   });
 
   const contact: ContactResponse = {
-    primaryContactId: id,
-    emails: [result.email],
-    phoneNumbers: [result.phoneNumber],
-    secondaryContactsId: [],
+    primaryContactId: primaryUser.id,
+    emails: primaryUser.email ? [primaryUser.email] : [],
+    phoneNumbers: primaryUser.phoneNumber ? [primaryUser.phoneNumber] : [],
+    secondaryContactsId: secondaryContacts.map((c) => c.id),
   };
 
-  console.log("Contacts", contacts);
-
-  if (contacts.length > 0) {
+  if (secondaryContacts.length > 0) {
     const emails = [
-      result.email,
-      ...contacts.map((c) => c.email).filter((e): e is string => e !== null),
-    ];
-    contact.emails = [...new Set(emails)];
-
-    const phoneNumbers = [
-      result.phoneNumber,
-      ...contacts
-        .map((c) => c.phoneNumber)
+      ...contact.emails,
+      ...secondaryContacts
+        .map((c) => c.email)
         .filter((e): e is string => e !== null),
     ];
-    contact.phoneNumbers = [...new Set(phoneNumbers)];
+    const phoneNumbers = [
+      ...contact.phoneNumbers,
+      ...secondaryContacts
+        .map((c) => c.phoneNumber)
+        .filter((p): p is string => p !== null),
+    ];
 
-    contact.secondaryContactsId = contacts.map((c) => c.id);
+    contact.emails = [...new Set(emails)];
+    contact.phoneNumbers = [...new Set(phoneNumbers)];
   }
 
-  console.log(contact);
-
   return contact;
+};
+
+export const changingPrecedence = async (contacts: User[], parent: User) => {
+  if (contacts.length === 0) return;
+
+  const contactIds = contacts.map((c) => c.id);
+
+  await db
+    .update(usersTable)
+    .set({
+      linkedId: parent.id,
+      updatedAt: sql`NOW()`,
+    })
+    .where(
+      and(inArray(usersTable.id, contactIds), isNull(usersTable.deletedAt))
+    );
+};
+
+export const migratePrimaryToSecondary = async (
+  primaryToConvert: User,
+  newPrimary: User
+) => {
+  try {
+    await db
+      .update(usersTable)
+      .set({
+        linkedId: newPrimary.id,
+        updatedAt: sql`NOW()`,
+      })
+      .where(
+        and(
+          eq(usersTable.linkedId, primaryToConvert.id),
+          eq(usersTable.linkPrecedence, "Secondary"),
+          isNull(usersTable.deletedAt)
+        )
+      );
+
+    await db
+      .update(usersTable)
+      .set({
+        linkedId: newPrimary.id,
+        linkPrecedence: "Secondary",
+        updatedAt: sql`NOW()`,
+      })
+      .where(eq(usersTable.id, primaryToConvert.id));
+  } catch (error) {
+    console.error("Error in migratePrimaryToSecondary:", error);
+    throw error;
+  }
 };
