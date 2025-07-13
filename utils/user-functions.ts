@@ -14,14 +14,10 @@ interface ContactResponse {
 
 export const findOneBy = async <T extends User>(
   table: typeof usersTable,
-  condition: SQL
+  condition: SQL<unknown> | undefined
 ): Promise<T | undefined> => {
-  const rows = (await db
-    .select()
-    .from(table)
-    .where(condition)
-    .orderBy(asc(table.createdAt))
-    .limit(1)) as User[];
+  if (!condition) return undefined;
+  const rows = (await db.select().from(table).where(condition)) as User[];
 
   return rows[0] as T | undefined;
 };
@@ -42,7 +38,7 @@ export const formatResponse = async (
     secondaryContactsId: [],
   };
 
-  //console.log(contacts);
+  console.log("Contacts", contacts);
 
   if (contacts.length > 0) {
     const emails = [
@@ -61,6 +57,8 @@ export const formatResponse = async (
 
     contact.secondaryContactsId = contacts.map((c) => c.id);
   }
+
+  console.log(contact);
 
   return contact;
 };

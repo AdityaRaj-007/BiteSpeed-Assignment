@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { usersTable } from "../db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { findOneBy, formatResponse } from "../utils/user-functions";
 import { db } from "../db/setup";
 
@@ -11,14 +11,14 @@ export const placeOrder = async (req: Request, res: Response) => {
     const { email, phoneNumber } = req.body;
 
     if (!email) {
-      res.status(400).json({
+      return res.status(400).json({
         message: "Please provide an email!",
         success: false,
       });
     }
 
     if (!phoneNumber) {
-      res.status(400).json({
+      return res.status(400).json({
         message: "Please provide a phone number!",
         success: false,
       });
@@ -28,11 +28,17 @@ export const placeOrder = async (req: Request, res: Response) => {
 
     const findUserByEmail = await findOneBy(
       usersTable,
-      eq(usersTable.email, email)
+      and(
+        eq(usersTable.email, email),
+        eq(usersTable.linkPrecedence, "Primary" as const)
+      )
     );
     const findUserByPhoneNumber = await findOneBy(
       usersTable,
-      eq(usersTable.phoneNumber, phoneNumber)
+      and(
+        eq(usersTable.phoneNumber, phoneNumber),
+        eq(usersTable.linkPrecedence, "Primary" as const)
+      )
     );
 
     console.log(findUserByEmail);
@@ -55,38 +61,108 @@ export const placeOrder = async (req: Request, res: Response) => {
         contact,
       });
     } else if (findUserByEmail && findUserByPhoneNumber) {
-      const primaryUser = findUserByEmail || findUserByPhoneNumber;
-
-      console.log(primaryUser);
-      if (findUserByEmail === findUserByPhoneNumber) {
+      if (
+        findUserByEmail.email === findUserByPhoneNumber.email &&
+        findUserByEmail.phoneNumber === findUserByPhoneNumber.phoneNumber
+      ) {
+        const primaryUser = findUserByEmail;
         console.log("Email and phoneNumber already exists!!");
         const contact = await formatResponse(primaryUser!);
 
         return res.status(200).json({
           contact,
         });
+      } else {
+        const firstUser = findUserByEmail,
+          secondUser = findUserByPhoneNumber;
+
+        if (firstUser?.createdAt <= secondUser?.createdAt) {
+          console.log("First user is primary!");
+          console.log("Updating second contact");
+          const result = await db
+            .update(usersTable)
+            .set({
+              linkedId: firstUser.id,
+              linkPrecedence: "Secondary",
+              updatedAt: sql`NOW()`,
+            })
+            .where(eq(usersTable.id, secondUser.id))
+            .returning();
+
+          console.log("Second contact updated", result);
+
+          const contact = await formatResponse(firstUser);
+
+          return res.status(200).json({
+            contact,
+          });
+        } else {
+          console.log("Second user is primary!");
+          const result = await db
+            .update(usersTable)
+            .set({
+              linkedId: secondUser.id,
+              linkPrecedence: "Secondary",
+              updatedAt: sql`NOW()`,
+            })
+            .where(eq(usersTable.id, firstUser.id))
+            .returning();
+
+          console.log(result);
+
+          const contact = await formatResponse(secondUser);
+
+          return res.status(200).json({
+            contact,
+          });
+        }
       }
     } else {
       const primaryUser = findUserByEmail || findUserByPhoneNumber;
 
       console.log(primaryUser);
 
-      const newUser = {
-        email: email,
-        phoneNumber: phoneNumber,
-        linkedId: primaryUser?.id,
-        linkPrecedence: "Secondary" as "Secondary",
-      };
+      if (!primaryUser?.email || !primaryUser?.phoneNumber) {
+        console.log(
+          "Primary user email or phone number is missing — skipping query."
+        );
+        return;
+      }
 
-      console.log("New contact found, adding it as secondary contact!!");
+      const contactExists = await db
+        .select()
+        .from(usersTable)
+        .where(
+          and(
+            eq(usersTable.email, email),
+            eq(usersTable.phoneNumber, phoneNumber)
+          )
+        );
 
-      const result = await db.insert(usersTable).values(newUser).returning();
-      console.log(result);
-      const contact = await formatResponse(primaryUser!);
+      console.log(contactExists);
 
-      return res.status(200).json({
-        contact,
-      });
+      if (contactExists.length === 0) {
+        const newUser = {
+          email: email,
+          phoneNumber: phoneNumber,
+          linkedId: primaryUser?.id,
+          linkPrecedence: "Secondary" as "Secondary",
+        };
+
+        console.log("New contact found, adding it as secondary contact!!");
+
+        const result = await db.insert(usersTable).values(newUser).returning();
+        console.log(result);
+        const contact = await formatResponse(primaryUser!);
+
+        return res.status(200).json({
+          contact,
+        });
+      } else {
+        return res.status(200).json({
+          message: "Contact exits",
+        });
+      }
     }
   } catch (error) {
     console.log("Error encountered!!");
